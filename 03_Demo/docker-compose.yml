@@ -1,0 +1,93 @@
+# ============================================================
+#  Projet Big Data - Hotel Booking Demand
+#  Stack de démonstration : HDFS + MySQL + Kafka + Flume + Sqoop
+#  Lancement :  docker compose up -d --build
+# ============================================================
+services:
+
+  # ---------- HDFS (stockage distribué) ----------
+  namenode:
+    image: bde2020/hadoop-namenode:2.0.0-hadoop3.2.1-java8
+    container_name: namenode
+    hostname: namenode
+    ports:
+      - "9870:9870"     # Interface web HDFS -> http://localhost:9870
+      - "9000:9000"
+    environment:
+      - CLUSTER_NAME=hotel-cluster
+    env_file: ./hadoop.env
+    volumes:
+      - namenode_data:/hadoop/dfs/name
+
+  datanode:
+    image: bde2020/hadoop-datanode:2.0.0-hadoop3.2.1-java8
+    container_name: datanode
+    hostname: datanode
+    depends_on: [namenode]
+    environment:
+      - SERVICE_PRECONDITION=namenode:9870
+    env_file: ./hadoop.env
+    volumes:
+      - datanode_data:/hadoop/dfs/data
+
+  # ---------- SGBDR source (PMS de l'hôtel) ----------
+  mysql:
+    image: mysql:8.0
+    container_name: mysql
+    hostname: mysql
+    command: ["--local-infile=1", "--default-authentication-plugin=mysql_native_password"]
+    environment:
+      - MYSQL_ROOT_PASSWORD=root
+      - MYSQL_DATABASE=hotel_db
+      - MYSQL_USER=sqoop
+      - MYSQL_PASSWORD=sqoop
+    ports:
+      - "3306:3306"
+    volumes:
+      - ./mysql/init:/docker-entrypoint-initdb.d
+      - ../02_Dataset:/var/lib/mysql-files:ro
+
+  # ---------- Kafka (streaming temps réel, mode KRaft sans ZooKeeper) ----------
+  kafka:
+    image: apache/kafka:3.7.0
+    container_name: kafka
+    hostname: kafka
+    ports:
+      - "29092:29092"   # accès depuis Windows (producteur/consommateur Python)
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093,EXTERNAL://:29092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,EXTERNAL://localhost:29092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,EXTERNAL:PLAINTEXT
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+    volumes:
+      - ../02_Dataset:/data:ro
+      - ./kafka:/scripts:ro
+
+  # ---------- Conteneur "outils" : Flume 1.11 + Sqoop 1.4.7 + client Hadoop ----------
+  tools:
+    build: ./tools
+    container_name: tools
+    hostname: tools
+    depends_on: [namenode, datanode, mysql, kafka]
+    env_file: ./hadoop.env
+    environment:
+      - SERVICE_PRECONDITION=namenode:9870 mysql:3306 kafka:9092
+    volumes:
+      - ./flume:/opt/flume-conf
+      - ./scripts:/scripts
+      - ./spool:/var/spool/weblogs
+      - ../02_Dataset:/data:ro
+    command: ["tail", "-f", "/dev/null"]
+
+volumes:
+  namenode_data:
+  datanode_data:
